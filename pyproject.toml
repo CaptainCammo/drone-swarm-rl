@@ -1,0 +1,35 @@
+[project]
+name = "drone-swarm-rl"
+version = "0.1.0"
+description = "A reinforcement learning environment for controlling drone swarms in 3D space"
+authors = [
+    {name = "Cameron",email = "cambelden732@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+package
+
+[tool.poetry]
+name = "drone-swarm-rl"
+version = "0.1.0"
+description = "A reinforcement learning environment for controlling drone swarms in 3D space"
+authors = ["Your Name <your.email@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+gymnasium = "^0.29.1"
+numpy = "^1.24.0"
+matplotlib = "^3.7.1"
+scipy = "^1.10.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.3.1"
+black = "^23.3.0"
+isort = "^5.12.0"
