@@ -35,8 +35,18 @@ class DroneSwarmEnv(gym.Env):
         # Define observation space for each drone
         # [x, y, z, vx, vy, vz, roll, pitch, yaw, wx, wy, wz]
         single_drone_obs_space = spaces.Box(
-            low=np.array([-np.inf] * 12),
-            high=np.array([np.inf] * 12),
+            low=np.array([
+                -100, -100, 0,      # Position bounds (x,y,z)
+                -20, -20, -20,      # Velocity bounds (vx,vy,vz)
+                -np.pi, -np.pi, -np.pi,  # Orientation bounds (roll,pitch,yaw)
+                -10, -10, -10       # Angular velocity bounds (wx,wy,wz)
+            ]),
+            high=np.array([
+                100, 100, 100,      # Position bounds
+                20, 20, 20,         # Velocity bounds
+                np.pi, np.pi, np.pi,  # Orientation bounds
+                10, 10, 10          # Angular velocity bounds
+            ]),
             dtype=np.float32
         )
         

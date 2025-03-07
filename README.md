@@ -66,7 +66,3 @@ You can customize various aspects of the environment:
 - Reward function
 - Initial conditions
 - Maximum episode length
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.

@@ -6,6 +6,7 @@ authors = [
     {name = "Cameron",email = "cambelden732@gmail.com"}
 ]
 readme = "README.md"
+requires-python = ">=3.11"
 dependencies = [
 ]
 
@@ -18,7 +19,6 @@ build-backend = "poetry.core.masonry.api"
 name = "drone-swarm-rl"
 version = "0.1.0"
 description = "A reinforcement learning environment for controlling drone swarms in 3D space"
-authors = ["Cameron <cambelden732@gmail.com>"]
 
 [tool.poetry.dependencies]
 python = "^3.11"
