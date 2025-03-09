@@ -1,6 +1,9 @@
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d.art3d import Line3DCollection
 
 class DroneSwarmEnv(gym.Env):
     """
@@ -31,6 +34,12 @@ class DroneSwarmEnv(gym.Env):
         self.mass = 0.5  # kg
         self.max_thrust = 15.0  # N
         self.max_angular_vel = 2.0  # rad/s
+        
+        # Visualization setup
+        self.fig = None
+        self.ax = None
+        self.drone_trails = {f'drone_{i}': [] for i in range(num_drones)}
+        self.trail_length = 50  # Number of positions to keep in trail
         
         # Define observation space for each drone
         # [x, y, z, vx, vy, vz, roll, pitch, yaw, wx, wy, wz]
@@ -151,5 +160,80 @@ class DroneSwarmEnv(gym.Env):
         return reward
     
     def render(self):
-        # Implement visualization if needed
-        pass 
+        """
+        Render the environment with matplotlib.
+        Shows:
+        - Drone positions as points
+        - Drone orientations as arrows
+        - Trails showing recent positions
+        - Swarm centroid
+        """
+        if self.fig is None or self.ax is None:
+            self.fig = plt.figure(figsize=(10, 10))
+            self.ax = self.fig.add_subplot(111, projection='3d')
+        
+        self.ax.cla()  # Clear the current axes
+        
+        # Set axis labels and limits
+        self.ax.set_xlabel('X')
+        self.ax.set_ylabel('Y')
+        self.ax.set_zlabel('Z')
+        self.ax.set_xlim([-100, 100])
+        self.ax.set_ylim([-100, 100])
+        self.ax.set_zlim([0, 100])
+        
+        # Get positions of all drones
+        positions = []
+        orientations = []
+        for i in range(self.num_drones):
+            drone_id = f'drone_{i}'
+            state = self.state[drone_id]
+            pos = state[0:3]
+            orientation = state[6:9]  # roll, pitch, yaw
+            
+            positions.append(pos)
+            orientations.append(orientation)
+            
+            # Update and plot trail
+            self.drone_trails[drone_id].append(pos.copy())
+            if len(self.drone_trails[drone_id]) > self.trail_length:
+                self.drone_trails[drone_id].pop(0)
+            
+            trail = np.array(self.drone_trails[drone_id])
+            if len(trail) > 1:
+                self.ax.plot3D(trail[:, 0], trail[:, 1], trail[:, 2], 
+                             alpha=0.3, linestyle='--', color=f'C{i}')
+        
+        positions = np.array(positions)
+        
+        # Plot drones as points
+        self.ax.scatter(positions[:, 0], positions[:, 1], positions[:, 2], 
+                       c=range(self.num_drones), cmap='viridis', 
+                       s=100, marker='o')
+        
+        # Plot orientation arrows
+        arrow_length = 5.0
+        for i, (pos, orient) in enumerate(zip(positions, orientations)):
+            # Simplified orientation visualization - just showing yaw
+            yaw = orient[2]
+            dx = arrow_length * np.cos(yaw)
+            dy = arrow_length * np.sin(yaw)
+            self.ax.quiver(pos[0], pos[1], pos[2], 
+                         dx, dy, 0,
+                         color=f'C{i}', 
+                         arrow_length_ratio=0.2)
+        
+        # Plot centroid
+        centroid = positions.mean(axis=0)
+        self.ax.scatter([centroid[0]], [centroid[1]], [centroid[2]], 
+                       color='red', marker='*', s=200, label='Centroid')
+        
+        # Add legend
+        self.ax.legend()
+        
+        # Add title with step information
+        self.ax.set_title(f'Step {self.current_step}')
+        
+        # Draw and pause briefly
+        plt.draw()
+        plt.pause(0.01) 

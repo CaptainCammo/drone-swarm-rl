@@ -19,6 +19,9 @@ def main():
         # Step the environment
         obs, reward, terminated, truncated, info = env.step(action)
         
+        # Render the environment
+        env.render()
+        
         print(f"Step {step}")
         print(f"Reward: {reward}")
         
@@ -31,6 +34,6 @@ def main():
         
         if terminated or truncated:
             break
-    
+
 if __name__ == "__main__":
     main() 
