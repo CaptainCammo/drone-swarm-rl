@@ -93,12 +93,41 @@ class DroneSwarmEnv(gym.Env):
         super().reset(seed=seed)
         self.current_step = 0
         
-        # Initialize each drone with random position and zero velocity/orientation
+        # Define the target centroid position
+        target_centroid = np.array([0, -90, 50])
+        
+        # Initialize each drone with position around the target centroid
         self.state = {}
+        positions = []
+        
+        # First, generate random positions in a small cube
         for i in range(self.num_drones):
+            # Random position in a 10x10x10 cube centered at origin
+            pos = self.np_random.uniform(low=-5, high=5, size=3)
+            positions.append(pos)
+        
+        # Calculate the current centroid of these positions
+        current_centroid = np.mean(positions, axis=0)
+        
+        # Calculate the offset needed to move the centroid to the target
+        offset = target_centroid - current_centroid
+        
+        # Apply the offset to all positions and initialize drones
+        for i in range(self.num_drones):
+            # Create state vector with zeros
             self.state[f'drone_{i}'] = np.zeros(12)
-            # Random initial position in a 10x10x10 cube
-            self.state[f'drone_{i}'][:3] = self.np_random.uniform(low=-5, high=5, size=3)
+            
+            # Set position with offset applied
+            self.state[f'drone_{i}'][:3] = positions[i] + offset
+            
+            # Set initial velocity for level flight (along y-axis)
+            # This gives enough airspeed to generate lift
+            initial_speed = 10.0  # m/s
+            self.state[f'drone_{i}'][3:6] = np.array([0, initial_speed, 0])
+            
+            # Set initial orientation for level flight
+            # Pitch slightly up to maintain altitude, yaw along y-axis
+            self.state[f'drone_{i}'][6:9] = np.array([0, -0.05, np.pi/2])  # [roll, pitch, yaw]
         
         return self._get_obs(), {}
     
