@@ -35,6 +35,16 @@ class DroneSwarmEnv(gym.Env):
         self.max_thrust = 15.0  # N
         self.max_angular_vel = 2.0  # rad/s
         
+        # Airplane-specific parameters
+        self.wing_area = 0.2  # m^2
+        self.air_density = 1.225  # kg/m^3
+        self.lift_coefficient = 2.0  # Base lift coefficient
+        self.drag_coefficient = 0.1  # Base drag coefficient
+        self.moment_of_inertia = np.array([0.1, 0.2, 0.15])  # kg*m^2 [roll, pitch, yaw]
+        self.wing_span = 1.0  # m
+        self.chord_length = 0.2  # m
+        self.stall_angle = np.radians(15)  # Stall angle in radians
+        
         # Visualization setup
         self.fig = None
         self.ax = None
@@ -115,30 +125,92 @@ class DroneSwarmEnv(gym.Env):
         return self._get_obs(), reward, terminated, truncated, {}
     
     def _update_drone_state(self, drone_id, action):
+        """Update drone state considering airplane aerodynamics"""
         # Extract current state
         state = self.state[drone_id]
         pos = state[0:3]
         vel = state[3:6]
-        orientation = state[6:9]
+        orientation = state[6:9]  # [roll, pitch, yaw]
         angular_vel = state[9:12]
         
         # Extract actions
         thrust = action[0] * self.max_thrust
-        angular_rates = action[1:4] * self.max_angular_vel
+        target_angular_rates = action[1:4] * self.max_angular_vel
         
-        # Simple physics update (Euler integration)
         dt = 0.05  # 50ms timestep
         
-        # Update position and velocity
-        acceleration = np.array([0, 0, -self.gravity])  # gravity
-        acceleration[2] += thrust / self.mass  # thrust in z-direction
+        # Convert orientation to rotation matrix
+        cos_roll, cos_pitch, cos_yaw = np.cos(orientation)
+        sin_roll, sin_pitch, sin_yaw = np.sin(orientation)
         
+        R = np.array([
+            [cos_yaw*cos_pitch, cos_yaw*sin_pitch*sin_roll - sin_yaw*cos_roll, cos_yaw*sin_pitch*cos_roll + sin_yaw*sin_roll],
+            [sin_yaw*cos_pitch, sin_yaw*sin_pitch*sin_roll + cos_yaw*cos_roll, sin_yaw*sin_pitch*cos_roll - cos_yaw*sin_roll],
+            [-sin_pitch, cos_pitch*sin_roll, cos_pitch*cos_roll]
+        ])
+        
+        # Calculate airspeed and angle of attack
+        airspeed = np.linalg.norm(vel)
+        if airspeed > 0.1:  # Prevent division by zero
+            # Calculate angle of attack (alpha) and sideslip angle (beta)
+            vel_normalized = vel / airspeed
+            alpha = np.arctan2(vel_normalized[2], vel_normalized[0])  # Angle of attack
+            beta = np.arcsin(vel_normalized[1])  # Sideslip angle
+        else:
+            alpha = 0
+            beta = 0
+        
+        # Calculate aerodynamic forces
+        dynamic_pressure = 0.5 * self.air_density * airspeed**2
+        
+        # Lift coefficient with stall modeling
+        cl = self.lift_coefficient * np.sin(2 * alpha)  # Simplified stall model
+        if abs(alpha) > self.stall_angle:
+            cl *= 0.6  # Reduce lift after stall
+        
+        # Drag coefficient with angle of attack dependency
+        cd = self.drag_coefficient * (1 + 2 * alpha**2)  # Increased drag at high AoA
+        
+        # Calculate forces in body frame
+        lift = dynamic_pressure * self.wing_area * cl
+        drag = dynamic_pressure * self.wing_area * cd
+        side_force = dynamic_pressure * self.wing_area * beta * 0.1  # Simplified side force
+        
+        # Combine aerodynamic forces
+        aero_forces = np.array([
+            -drag,
+            side_force,
+            -lift
+        ])
+        
+        # Transform forces to global frame
+        forces_global = R @ np.array([thrust, 0, 0]) + R @ aero_forces + np.array([0, 0, -self.mass * self.gravity])
+        
+        # Update velocity and position
+        acceleration = forces_global / self.mass
         vel += acceleration * dt
         pos += vel * dt
         
-        # Update orientation and angular velocity
+        # Calculate moments
+        roll_moment = -angular_vel[0] * 0.1  # Damping
+        pitch_moment = -angular_vel[1] * 0.2  # Damping
+        yaw_moment = -angular_vel[2] * 0.15  # Damping
+        
+        # Add control surface effects
+        roll_moment += target_angular_rates[0] * airspeed * 0.1
+        pitch_moment += target_angular_rates[1] * airspeed * 0.2
+        yaw_moment += target_angular_rates[2] * airspeed * 0.15
+        
+        # Calculate angular acceleration
+        moments = np.array([roll_moment, pitch_moment, yaw_moment])
+        angular_acc = moments / self.moment_of_inertia
+        
+        # Update angular velocity and orientation
+        angular_vel += angular_acc * dt
         orientation += angular_vel * dt
-        angular_vel = angular_rates  # Direct control of angular velocity
+        
+        # Normalize angles to [-pi, pi]
+        orientation = np.mod(orientation + np.pi, 2 * np.pi) - np.pi
         
         # Update state
         self.state[drone_id] = np.concatenate([pos, vel, orientation, angular_vel])
@@ -180,7 +252,7 @@ class DroneSwarmEnv(gym.Env):
         self.ax.set_zlabel('Z')
         self.ax.set_xlim([-100, 100])
         self.ax.set_ylim([-100, 100])
-        self.ax.set_zlim([0, 100])
+        self.ax.set_zlim([-100, 100])
         
         # Get positions of all drones
         positions = []
