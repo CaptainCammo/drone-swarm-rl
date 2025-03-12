@@ -120,14 +120,14 @@ class DroneSwarmEnv(gym.Env):
             # Set position with offset applied
             self.state[f'drone_{i}'][:3] = positions[i] + offset
             
-            # Set initial velocity for level flight (along y-axis)
+            # Set initial velocity for level flight (along x-axis)
             # This gives enough airspeed to generate lift
             initial_speed = 10.0  # m/s
-            self.state[f'drone_{i}'][3:6] = np.array([0, initial_speed, 0])
+            self.state[f'drone_{i}'][3:6] = np.array([initial_speed, 0, 0])
             
             # Set initial orientation for level flight
-            # Pitch slightly up to maintain altitude, yaw along y-axis
-            self.state[f'drone_{i}'][6:9] = np.array([0, -0.05, np.pi/2])  # [roll, pitch, yaw]
+            # Yaw = 0 (facing positive x-axis), slight negative pitch to maintain altitude
+            self.state[f'drone_{i}'][6:9] = np.array([0, -0.05, 0])  # [roll, pitch, yaw]
         
         return self._get_obs(), {}
     
@@ -168,9 +168,17 @@ class DroneSwarmEnv(gym.Env):
         
         dt = 0.05  # 50ms timestep
         
-        # Convert orientation to rotation matrix
-        cos_roll, cos_pitch, cos_yaw = np.cos(orientation)
-        sin_roll, sin_pitch, sin_yaw = np.sin(orientation)
+        # Safety check for NaN values in state
+        if np.any(np.isnan(pos)) or np.any(np.isnan(vel)) or np.any(np.isnan(orientation)) or np.any(np.isnan(angular_vel)):
+            print(f"Warning: NaN detected in drone state. Resetting drone {drone_id} velocity and angular velocity.")
+            vel = np.zeros(3)
+            vel[1] = 10.0  # Reset to initial forward velocity
+            angular_vel = np.zeros(3)
+            # Keep position and orientation as is
+        
+        # Convert orientation to rotation matrix (with safety checks)
+        cos_roll, cos_pitch, cos_yaw = np.cos(np.clip(orientation, -np.pi, np.pi))
+        sin_roll, sin_pitch, sin_yaw = np.sin(np.clip(orientation, -np.pi, np.pi))
         
         R = np.array([
             [cos_yaw*cos_pitch, cos_yaw*sin_pitch*sin_roll - sin_yaw*cos_roll, cos_yaw*sin_pitch*cos_roll + sin_yaw*sin_roll],
@@ -178,32 +186,68 @@ class DroneSwarmEnv(gym.Env):
             [-sin_pitch, cos_pitch*sin_roll, cos_pitch*cos_roll]
         ])
         
-        # Calculate airspeed and angle of attack
+        # Calculate airspeed and angle of attack with safety checks
         airspeed = np.linalg.norm(vel)
-        if airspeed > 0.1:  # Prevent division by zero
-            # Calculate angle of attack (alpha) and sideslip angle (beta)
-            vel_normalized = vel / airspeed
-            alpha = np.arctan2(vel_normalized[2], vel_normalized[0])  # Angle of attack
-            beta = np.arcsin(vel_normalized[1])  # Sideslip angle
-        else:
-            alpha = 0
-            beta = 0
         
-        # Calculate aerodynamic forces
+        # Ensure minimum airspeed for numerical stability
+        if airspeed < 0.5:  # Increased minimum airspeed threshold
+            # Apply a small boost in the current direction if speed is too low
+            if airspeed > 0.1:
+                vel = vel * (0.5 / airspeed)  # Scale up to minimum airspeed
+            else:
+                # If nearly stopped, apply velocity in the direction the drone is facing
+                vel = R @ np.array([0.5, 0, 0])  # Minimum forward velocity
+            airspeed = 0.5  # Update airspeed
+        
+        # Calculate angle of attack and sideslip with safety checks
+        vel_normalized = vel / airspeed
+        
+        # Use safer calculation for alpha and beta with bounds
+        # Forward direction in body frame is x-axis
+        body_vel = R.T @ vel  # Transform velocity to body frame
+        
+        # Calculate alpha and beta more robustly
+        if abs(body_vel[0]) > 0.1:  # If there's sufficient forward velocity
+            alpha = np.arctan2(body_vel[2], body_vel[0])  # Angle of attack
+        else:
+            alpha = 0.0
+            
+        # Limit alpha to prevent extreme values
+        alpha = np.clip(alpha, -np.pi/4, np.pi/4)
+        
+        # Calculate sideslip angle with safety
+        if airspeed > 0.5:
+            beta = np.arcsin(np.clip(vel_normalized[1], -0.99, 0.99))  # Sideslip angle
+        else:
+            beta = 0.0
+            
+        # Limit beta to prevent extreme values
+        beta = np.clip(beta, -np.pi/4, np.pi/4)
+        
+        # Calculate aerodynamic forces with safety checks
         dynamic_pressure = 0.5 * self.air_density * airspeed**2
         
-        # Lift coefficient with stall modeling
+        # More stable lift coefficient calculation
         cl = self.lift_coefficient * np.sin(2 * alpha)  # Simplified stall model
         if abs(alpha) > self.stall_angle:
             cl *= 0.6  # Reduce lift after stall
         
-        # Drag coefficient with angle of attack dependency
+        # More stable drag coefficient calculation
         cd = self.drag_coefficient * (1 + 2 * alpha**2)  # Increased drag at high AoA
         
-        # Calculate forces in body frame
+        # Ensure coefficients are within reasonable bounds
+        cl = np.clip(cl, -2.0, 2.0)
+        cd = np.clip(cd, 0.05, 1.0)  # Ensure minimum drag
+        
+        # Calculate forces in body frame with safety checks
         lift = dynamic_pressure * self.wing_area * cl
         drag = dynamic_pressure * self.wing_area * cd
         side_force = dynamic_pressure * self.wing_area * beta * 0.1  # Simplified side force
+        
+        # Ensure forces are finite
+        lift = np.clip(lift, -100, 100)
+        drag = np.clip(drag, 0, 100)
+        side_force = np.clip(side_force, -20, 20)
         
         # Combine aerodynamic forces
         aero_forces = np.array([
@@ -215,27 +259,47 @@ class DroneSwarmEnv(gym.Env):
         # Transform forces to global frame
         forces_global = R @ np.array([thrust, 0, 0]) + R @ aero_forces + np.array([0, 0, -self.mass * self.gravity])
         
-        # Update velocity and position
+        # Update velocity and position with safety checks
         acceleration = forces_global / self.mass
+        acceleration = np.clip(acceleration, -20, 20)  # Limit extreme accelerations
+        
         vel += acceleration * dt
+        vel = np.clip(vel, -20, 20)  # Limit extreme velocities
+        
         pos += vel * dt
         
-        # Calculate moments
+        # Enforce minimum altitude
+        if pos[2] < 0.1:
+            pos[2] = 0.1
+            vel[2] = max(0, vel[2])  # Prevent negative vertical velocity if on ground
+        
+        # Calculate moments with safety checks
         roll_moment = -angular_vel[0] * 0.1  # Damping
         pitch_moment = -angular_vel[1] * 0.2  # Damping
         yaw_moment = -angular_vel[2] * 0.15  # Damping
         
-        # Add control surface effects
-        roll_moment += target_angular_rates[0] * airspeed * 0.1
-        pitch_moment += target_angular_rates[1] * airspeed * 0.2
-        yaw_moment += target_angular_rates[2] * airspeed * 0.15
+        # Add control surface effects with safety checks
+        # Scale control effectiveness with airspeed, but ensure minimum effectiveness
+        airspeed_factor = min(1.0, max(0.2, airspeed / 10.0))
+        
+        roll_moment += target_angular_rates[0] * airspeed_factor * 0.1
+        pitch_moment += target_angular_rates[1] * airspeed_factor * 0.2
+        yaw_moment += target_angular_rates[2] * airspeed_factor * 0.15
+        
+        # Ensure moments are finite
+        roll_moment = np.clip(roll_moment, -1.0, 1.0)
+        pitch_moment = np.clip(pitch_moment, -1.0, 1.0)
+        yaw_moment = np.clip(yaw_moment, -1.0, 1.0)
         
         # Calculate angular acceleration
         moments = np.array([roll_moment, pitch_moment, yaw_moment])
         angular_acc = moments / self.moment_of_inertia
+        angular_acc = np.clip(angular_acc, -5, 5)  # Limit extreme angular accelerations
         
         # Update angular velocity and orientation
         angular_vel += angular_acc * dt
+        angular_vel = np.clip(angular_vel, -2, 2)  # Limit extreme angular velocities
+        
         orientation += angular_vel * dt
         
         # Normalize angles to [-pi, pi]
@@ -243,6 +307,13 @@ class DroneSwarmEnv(gym.Env):
         
         # Update state
         self.state[drone_id] = np.concatenate([pos, vel, orientation, angular_vel])
+        
+        # Final safety check for NaN values
+        if np.any(np.isnan(self.state[drone_id])):
+            print(f"Warning: NaN detected after update for drone {drone_id}. Resetting to safe values.")
+            # Reset to safe values
+            self.state[drone_id][3:6] = np.array([0, 10.0, 0])  # Reset velocity
+            self.state[drone_id][9:12] = np.zeros(3)  # Reset angular velocity
     
     def _compute_reward(self):
         # Simple reward function based on maintaining formation
@@ -259,6 +330,88 @@ class DroneSwarmEnv(gym.Env):
             reward -= dist_to_centroid
         
         return reward
+    
+    def get_stabilizing_action(self):
+        """
+        Generate actions that help maintain current orientation and velocity.
+        Returns a dictionary of actions for each drone that will help it maintain
+        stable flight without random perturbations.
+        """
+        actions = {}
+        
+        for i in range(self.num_drones):
+            drone_id = f'drone_{i}'
+            state = self.state[drone_id]
+            
+            # Extract current state
+            vel = state[3:6]
+            orientation = state[6:9]  # [roll, pitch, yaw]
+            angular_vel = state[9:12]
+            
+            # Safety check for NaN values
+            if np.any(np.isnan(vel)) or np.any(np.isnan(orientation)) or np.any(np.isnan(angular_vel)):
+                print(f"Warning: NaN detected in drone state during action calculation. Using default action for {drone_id}.")
+                actions[drone_id] = np.array([0.5, 0.0, 0.0, 0.0], dtype=np.float32)
+                continue
+            
+            # Calculate airspeed with safety check
+            airspeed = np.linalg.norm(vel)
+            
+            # 1. Thrust control to maintain airspeed
+            target_airspeed = 10.0  # m/s
+            thrust = 0.5  # Default mid-range thrust
+            
+            # More aggressive thrust control for stability
+            if airspeed < target_airspeed - 0.5:
+                # Proportional control for thrust
+                thrust_error = target_airspeed - airspeed
+                thrust = 0.5 + thrust_error * 0.05  # P controller for thrust
+                thrust = np.clip(thrust, 0.3, 0.9)  # Limit thrust range
+            elif airspeed > target_airspeed + 0.5:
+                thrust_error = airspeed - target_airspeed
+                thrust = 0.5 - thrust_error * 0.05  # P controller for thrust
+                thrust = np.clip(thrust, 0.3, 0.9)  # Limit thrust range
+            
+            # 2. Roll control to keep wings level
+            # PD controller for roll
+            roll_error = -orientation[0]  # Error from level (0 roll)
+            roll_rate = roll_error * 0.8 - angular_vel[0] * 0.4  # Increased gains
+            roll_rate = np.clip(roll_rate, -1.0, 1.0)
+            
+            # 3. Pitch control to maintain altitude
+            # Target a slight negative pitch to generate lift
+            target_pitch = -0.05
+            
+            # Check altitude and adjust pitch target
+            pos = state[0:3]
+            altitude = pos[2]
+            
+            # Adjust target pitch based on altitude
+            if altitude < 40:  # If too low, pitch up more
+                target_pitch = -0.1
+            elif altitude > 60:  # If too high, pitch down more
+                target_pitch = 0.0
+            
+            # PD controller for pitch
+            pitch_error = target_pitch - orientation[1]
+            pitch_rate = pitch_error * 0.8 - angular_vel[1] * 0.4  # Increased gains
+            pitch_rate = np.clip(pitch_rate, -1.0, 1.0)
+            
+            # 4. Yaw control to maintain heading
+            # Keep yaw at 0 (facing along x-axis)
+            target_yaw = 0.0
+            
+            # Calculate yaw error using angle difference on unit circle
+            yaw_error = np.arctan2(np.sin(target_yaw - orientation[2]), np.cos(target_yaw - orientation[2]))
+            
+            # PD controller for yaw
+            yaw_rate = yaw_error * 0.8 - angular_vel[2] * 0.4  # Increased gains
+            yaw_rate = np.clip(yaw_rate, -1.0, 1.0)
+            
+            # Combine all control inputs
+            actions[drone_id] = np.array([thrust, roll_rate, pitch_rate, yaw_rate], dtype=np.float32)
+        
+        return actions
     
     def render(self):
         """
@@ -286,6 +439,7 @@ class DroneSwarmEnv(gym.Env):
         # Get positions of all drones
         positions = []
         orientations = []
+        
         for i in range(self.num_drones):
             drone_id = f'drone_{i}'
             state = self.state[drone_id]
