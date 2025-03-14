@@ -144,11 +144,28 @@ class DroneSwarmEnv(gym.Env):
         for drone_id, drone_action in action.items():
             self._update_drone_state(drone_id, drone_action)
         
+        # Calculate positions and centroid
+        positions = np.array([self.state[f'drone_{i}'][:3] for i in range(self.num_drones)])
+        centroid = positions.mean(axis=0)
+        
         # Calculate reward
-        reward = self._compute_reward()
+        reward = self._compute_reward(centroid, positions)
         
         # Check if episode is done
         terminated = self.current_step >= self.max_steps
+        
+        # Check if centroid is outside the boundary
+        boundary_x = [-100, 100]
+        boundary_y = [-100, 100]
+        boundary_z = [0, 100]
+        
+        # Terminate if centroid is outside the boundary
+        if (centroid[0] < boundary_x[0] or centroid[0] > boundary_x[1] or
+            centroid[1] < boundary_y[0] or centroid[1] > boundary_y[1] or
+            centroid[2] < boundary_z[0] or centroid[2] > boundary_z[1]):
+            terminated = True
+            reward -= 100  # Large penalty for going out of bounds
+        
         truncated = False
         
         return self._get_obs(), reward, terminated, truncated, {}
@@ -315,19 +332,58 @@ class DroneSwarmEnv(gym.Env):
             self.state[drone_id][3:6] = np.array([0, 10.0, 0])  # Reset velocity
             self.state[drone_id][9:12] = np.zeros(3)  # Reset angular velocity
     
-    def _compute_reward(self):
-        # Simple reward function based on maintaining formation
-        # You can modify this based on your specific requirements
+    def _compute_reward(self, centroid=None, positions=None):
+        """
+        Compute reward based on formation maintenance and boundary constraints.
+        
+        Args:
+            centroid: Pre-computed centroid (optional)
+            positions: Pre-computed positions (optional)
+        """
+        # Calculate positions and centroid if not provided
+        if positions is None:
+            positions = np.array([self.state[f'drone_{i}'][:3] for i in range(self.num_drones)])
+        if centroid is None:
+            centroid = positions.mean(axis=0)
+        
+        # Initialize reward
         reward = 0
         
-        # Calculate centroid
-        positions = np.array([self.state[f'drone_{i}'][:3] for i in range(self.num_drones)])
-        centroid = positions.mean(axis=0)
-        
-        # Reward based on distance to centroid
+        # 1. Formation reward: negative distance to centroid
+        formation_reward = 0
         for i in range(self.num_drones):
             dist_to_centroid = np.linalg.norm(positions[i] - centroid)
-            reward -= dist_to_centroid
+            formation_reward -= dist_to_centroid
+        
+        # 2. Boundary reward: encourage staying within safe boundaries
+        # Define safe boundaries (smaller than termination boundaries)
+        safe_boundary_x = [-90, 90]
+        safe_boundary_y = [-90, 90]
+        safe_boundary_z = [10, 90]
+        
+        # Calculate distance to safe boundary
+        boundary_reward = 0
+        
+        # X-axis boundary
+        if centroid[0] < safe_boundary_x[0]:
+            boundary_reward -= 0.5 * (safe_boundary_x[0] - centroid[0])
+        elif centroid[0] > safe_boundary_x[1]:
+            boundary_reward -= 0.5 * (centroid[0] - safe_boundary_x[1])
+            
+        # Y-axis boundary
+        if centroid[1] < safe_boundary_y[0]:
+            boundary_reward -= 0.5 * (safe_boundary_y[0] - centroid[1])
+        elif centroid[1] > safe_boundary_y[1]:
+            boundary_reward -= 0.5 * (centroid[1] - safe_boundary_y[1])
+            
+        # Z-axis boundary (altitude)
+        if centroid[2] < safe_boundary_z[0]:
+            boundary_reward -= 1.0 * (safe_boundary_z[0] - centroid[2])  # Higher penalty for low altitude
+        elif centroid[2] > safe_boundary_z[1]:
+            boundary_reward -= 0.5 * (centroid[2] - safe_boundary_z[1])
+        
+        # 3. Combine rewards
+        reward = formation_reward + boundary_reward
         
         return reward
     
