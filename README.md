@@ -1,11 +1,13 @@
 # Drone Swarm Reinforcement Learning Environment
 
-This project provides a customizable environment for training AI agents to control multiple drones in 3D space. The environment is built using the Gymnasium framework and provides a realistic simulation of drone dynamics.
+This project provides a customizable environment for training AI agents to control multiple drones in 3D space. The environment is built using the Gymnasium framework and provides a realistic simulation of drone dynamics with airplane-like aerodynamics.
 
 ## Features
 
 - Support for multiple drones in a swarm
-- 3D physics simulation with gravity and thrust
+- 3D physics simulation with realistic airplane aerodynamics
+- Boundary constraints with penalties for out-of-bounds movement
+- Centroid-based swarm coordination
 - Customizable reward function
 - Full state observation including position, velocity, orientation, and angular velocity
 - Action space for controlling thrust and angular rates
@@ -40,29 +42,3 @@ This project provides a customizable environment for training AI agents to contr
 ## Usage
 
 Check out the example in `examples/basic_usage.py` for a simple demonstration of how to use the environment:
-
-```python
-from drone_swarm_rl.environment import DroneSwarmEnv
-
-# Create environment with 3 drones
-env = DroneSwarmEnv(num_drones=3)
-
-# Reset the environment
-obs, _ = env.reset()
-
-# Run simulation
-for _ in range(100):
-    action = {drone_id: env.action_space[drone_id].sample() 
-             for drone_id in env.action_space.spaces}
-    obs, reward, terminated, truncated, info = env.step(action)
-```
-
-## Customization
-
-You can customize various aspects of the environment:
-
-- Number of drones
-- Physical parameters (mass, max thrust, etc.)
-- Reward function
-- Initial conditions
-- Maximum episode length
