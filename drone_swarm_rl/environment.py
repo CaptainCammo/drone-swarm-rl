@@ -25,6 +25,7 @@ class DroneSwarmEnv(gym.Env):
     def __init__(self, num_drones=3, max_steps=1000):
         super().__init__()
         
+        # Environment parameters
         self.num_drones = num_drones
         self.max_steps = max_steps
         self.current_step = 0
@@ -45,33 +46,17 @@ class DroneSwarmEnv(gym.Env):
         self.chord_length = 0.2  # m
         self.stall_angle = np.radians(15)  # Stall angle in radians
         
-        # Visualization setup
-        self.fig = None
-        self.ax = None
-        self.drone_trails = {f'drone_{i}': [] for i in range(num_drones)}
-        self.trail_length = 50  # Number of positions to keep in trail
-        
         # Define observation space for each drone
         # [x, y, z, vx, vy, vz, roll, pitch, yaw, wx, wy, wz]
-        single_drone_obs_space = spaces.Box(
-            low=np.array([
-                -100, -100, 0,      # Position bounds (x,y,z)
-                -20, -20, -20,      # Velocity bounds (vx,vy,vz)
-                -np.pi, -np.pi, -np.pi,  # Orientation bounds (roll,pitch,yaw)
-                -10, -10, -10       # Angular velocity bounds (wx,wy,wz)
-            ]),
-            high=np.array([
-                100, 100, 100,      # Position bounds
-                20, 20, 20,         # Velocity bounds
-                np.pi, np.pi, np.pi,  # Orientation bounds
-                10, 10, 10          # Angular velocity bounds
-            ]),
+        single_drone_obs_space = gym.spaces.Box(
+            low=np.array([-np.inf, -np.inf, -np.inf, -np.inf, -np.inf, -np.inf, -np.pi, -np.pi, -np.pi, -np.inf, -np.inf, -np.inf]),
+            high=np.array([np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.pi, np.pi, np.pi, np.inf, np.inf, np.inf]),
             dtype=np.float32
         )
         
         # Define action space for each drone
         # [thrust, roll_rate, pitch_rate, yaw_rate]
-        single_drone_action_space = spaces.Box(
+        single_drone_action_space = gym.spaces.Box(
             low=np.array([0, -1, -1, -1]),
             high=np.array([1, 1, 1, 1]),
             dtype=np.float32
@@ -86,8 +71,18 @@ class DroneSwarmEnv(gym.Env):
             f'drone_{i}': single_drone_action_space for i in range(num_drones)
         })
         
+        # Visualization setup
+        self.fig = None
+        self.ax = None
+        self.drone_trails = {f'drone_{i}': [] for i in range(num_drones)}
+        self.trail_length = 50  # Number of positions to keep in trail
+        
         # Initialize state
-        self.reset()
+        self.state = {}
+        
+        # Skip reset during initialization if flag is set (for subclasses)
+        if not hasattr(self, '_skip_reset_in_init') or not self._skip_reset_in_init:
+            self.reset()
     
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -469,7 +464,7 @@ class DroneSwarmEnv(gym.Env):
         
         return actions
     
-    def render(self):
+    def render(self, return_fig=False):
         """
         Render the environment with matplotlib.
         Shows:
@@ -477,6 +472,12 @@ class DroneSwarmEnv(gym.Env):
         - Drone orientations as arrows
         - Trails showing recent positions
         - Swarm centroid
+        
+        Args:
+            return_fig (bool): If True, returns the figure and axes instead of displaying
+            
+        Returns:
+            tuple: (fig, ax) if return_fig is True, otherwise None
         """
         if self.fig is None or self.ax is None:
             self.fig = plt.figure(figsize=(10, 10))
@@ -545,6 +546,10 @@ class DroneSwarmEnv(gym.Env):
         # Add title with step information
         self.ax.set_title(f'Step {self.current_step}')
         
-        # Draw and pause briefly
-        plt.draw()
-        plt.pause(0.01) 
+        if return_fig:
+            return self.fig, self.ax
+        else:
+            # Draw and pause briefly to update the display
+            plt.draw()
+            plt.pause(0.01)
+            return None 
