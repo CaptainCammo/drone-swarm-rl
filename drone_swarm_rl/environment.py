@@ -150,9 +150,12 @@ class DroneSwarmEnv(gym.Env):
         terminated = self.current_step >= self.max_steps
         
         # Check if centroid is outside the boundary
-        boundary_x = [-100, 100]
-        boundary_y = [-100, 100]
-        boundary_z = [0, 100]
+        boundary_x = [-300, 300]
+        boundary_y = [-300, 300]
+        boundary_z = [0, 300]
+        
+        # Initialize info dictionary
+        info = {}
         
         # Terminate if centroid is outside the boundary
         if (centroid[0] < boundary_x[0] or centroid[0] > boundary_x[1] or
@@ -160,10 +163,28 @@ class DroneSwarmEnv(gym.Env):
             centroid[2] < boundary_z[0] or centroid[2] > boundary_z[1]):
             terminated = True
             reward -= 100  # Large penalty for going out of bounds
+            
+            # Add termination reason to info
+            if centroid[0] < boundary_x[0]:
+                info['terminated_reason'] = 'out_of_bounds_x_min'
+            elif centroid[0] > boundary_x[1]:
+                info['terminated_reason'] = 'out_of_bounds_x_max'
+            elif centroid[1] < boundary_y[0]:
+                info['terminated_reason'] = 'out_of_bounds_y_min'
+            elif centroid[1] > boundary_y[1]:
+                info['terminated_reason'] = 'out_of_bounds_y_max'
+            elif centroid[2] < boundary_z[0]:
+                info['terminated_reason'] = 'out_of_bounds_z_min'
+            elif centroid[2] > boundary_z[1]:
+                info['terminated_reason'] = 'out_of_bounds_z_max'
+        
+        # Add max steps termination reason
+        if self.current_step >= self.max_steps:
+            info['terminated_reason'] = 'max_steps'
         
         truncated = False
         
-        return self._get_obs(), reward, terminated, truncated, {}
+        return self._get_obs(), reward, terminated, truncated, info
     
     def _update_drone_state(self, drone_id, action):
         """Update drone state considering airplane aerodynamics"""
@@ -352,9 +373,9 @@ class DroneSwarmEnv(gym.Env):
         
         # 2. Boundary reward: encourage staying within safe boundaries
         # Define safe boundaries (smaller than termination boundaries)
-        safe_boundary_x = [-90, 90]
-        safe_boundary_y = [-90, 90]
-        safe_boundary_z = [10, 90]
+        safe_boundary_x = [-280, 280]
+        safe_boundary_y = [-280, 280]
+        safe_boundary_z = [20, 280]
         
         # Calculate distance to safe boundary
         boundary_reward = 0
@@ -489,9 +510,9 @@ class DroneSwarmEnv(gym.Env):
         self.ax.set_xlabel('X')
         self.ax.set_ylabel('Y')
         self.ax.set_zlabel('Z')
-        self.ax.set_xlim([-100, 100])
-        self.ax.set_ylim([-100, 100])
-        self.ax.set_zlim([-100, 100])
+        self.ax.set_xlim([-300, 300])
+        self.ax.set_ylim([-300, 300])
+        self.ax.set_zlim([0, 300])
         
         # Get positions of all drones
         positions = []
@@ -524,7 +545,7 @@ class DroneSwarmEnv(gym.Env):
                        s=100, marker='o')
         
         # Plot orientation arrows
-        arrow_length = 5.0
+        arrow_length = 10.0  # Increased arrow length for better visibility in larger space
         for i, (pos, orient) in enumerate(zip(positions, orientations)):
             # Simplified orientation visualization - just showing yaw
             yaw = orient[2]
