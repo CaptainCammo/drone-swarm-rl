@@ -362,4 +362,40 @@ class WaypointDroneEnv(DroneSwarmEnv):
             # Update the display
             plt.draw()
             plt.pause(0.01)
-            return None 
+            return None
+
+def create_scanning_waypoints():
+    """
+    Create a set of 10 waypoints that form a scanning pattern through the expanded 3D space.
+    The pattern is designed with much wider spacing and gentler turns to make it easier
+    for drones to navigate, with long straight segments between turns.
+    """
+    # Starting point - adjusted for the expanded space
+    start_x, start_y, start_z = -40, 0, 50
+    
+    # Define a much more spread out scanning pattern with gentler turns
+    waypoints = [
+        # First long straight segment
+        np.array([start_x + 100, start_y, start_z]),
+        np.array([start_x + 200, start_y, start_z + 100]),
+        
+        # Wide turn and second straight segment (shifted north)
+        np.array([start_x + 400, start_y + 150, start_z]),
+        np.array([start_x, start_y + 150, start_z]),
+        
+        # Wide turn and third straight segment (shifted north again)
+        np.array([start_x, start_y + 300, start_z]),
+        np.array([start_x + 400, start_y + 300, start_z]),
+        
+        # Climb to higher altitude with a gentle slope
+        np.array([start_x + 400, start_y + 300, start_z + 100]),
+        
+        # Fourth straight segment at higher altitude
+        np.array([start_x, start_y + 300, start_z + 100]),
+        
+        # Final straight segment completing the pattern
+        np.array([start_x, start_y, start_z + 100]),
+        np.array([start_x + 400, start_y, start_z + 100])
+    ]
+    
+    return waypoints
