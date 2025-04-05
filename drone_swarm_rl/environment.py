@@ -89,7 +89,7 @@ class DroneSwarmEnv(gym.Env):
             
             # Set initial orientation for level flight
             # Yaw = 0 (facing positive x-axis), slight negative pitch to maintain altitude
-            initial_orientation = np.array([0, -0.05, 0])  # [roll, pitch, yaw]
+            initial_orientation = np.array([0, +0.05, 0])  # [roll, pitch, yaw]
             
             # Initialize drone with specified state
             self.drones[f'drone_{i}'] = Drone(

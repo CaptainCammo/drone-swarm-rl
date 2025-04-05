@@ -9,63 +9,64 @@ import os
 class SwarmDQNNetwork(nn.Module):
     def __init__(self, num_drones, state_size_per_drone, action_size_per_drone):
         super(SwarmDQNNetwork, self).__init__()
-        
         self.num_drones = num_drones
         self.state_size_per_drone = state_size_per_drone
         self.action_size_per_drone = action_size_per_drone
         
-        # Calculate total input size (all drone states concatenated)
-        total_input_size = num_drones * state_size_per_drone
+        # Calculate total input and output sizes
+        total_state_size = num_drones * state_size_per_drone
+        total_action_size = num_drones * action_size_per_drone
         
-        # First hidden layer - processes combined state
+        # Define the network architecture
         self.layer1 = nn.Sequential(
-            nn.Linear(total_input_size, 512),
+            nn.Linear(total_state_size, 512),
             nn.ReLU(),
-            nn.BatchNorm1d(512)
+            nn.LayerNorm(512)  # Replace BatchNorm with LayerNorm
         )
         
-        # Second hidden layer
         self.layer2 = nn.Sequential(
             nn.Linear(512, 512),
             nn.ReLU(),
-            nn.BatchNorm1d(512)
+            nn.LayerNorm(512)  # Replace BatchNorm with LayerNorm
         )
         
-        # Third hidden layer
         self.layer3 = nn.Sequential(
             nn.Linear(512, 256),
             nn.ReLU(),
-            nn.BatchNorm1d(256)
+            nn.LayerNorm(256)  # Replace BatchNorm with LayerNorm
         )
         
-        # Fourth hidden layer
         self.layer4 = nn.Sequential(
             nn.Linear(256, 256),
             nn.ReLU(),
-            nn.BatchNorm1d(256)
+            nn.LayerNorm(256)  # Replace BatchNorm with LayerNorm
         )
         
-        # Fifth hidden layer
         self.layer5 = nn.Sequential(
             nn.Linear(256, 128),
             nn.ReLU(),
-            nn.BatchNorm1d(128)
+            nn.LayerNorm(128)  # Replace BatchNorm with LayerNorm
         )
         
-        # Output layer - produces actions for all drones
-        self.output_layer = nn.Linear(128, num_drones * action_size_per_drone)
+        # Output layer
+        self.output_layer = nn.Linear(128, total_action_size)
         
-        # Initialize weights
+        # Initialize weights using Kaiming initialization
         self._initialize_weights()
     
     def _initialize_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
-                nn.init.constant_(m.bias, 0)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
     
     def forward(self, x):
-        # x shape: [batch_size, num_drones * state_size]
+        # Ensure input has batch dimension
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+        
+        # Forward pass through the network
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
@@ -73,7 +74,7 @@ class SwarmDQNNetwork(nn.Module):
         x = self.layer5(x)
         x = self.output_layer(x)
         
-        # Reshape output to [batch_size, num_drones, action_size]
+        # Reshape output to [batch_size, num_drones, action_size_per_drone]
         batch_size = x.size(0)
         x = x.view(batch_size, self.num_drones, self.action_size_per_drone)
         
@@ -143,14 +144,16 @@ class DroneSwarmDQN:
         """
         if use_epsilon and random.random() < self.epsilon:
             # Random action
-            action = torch.randn(state.size(0), self.policy_net.num_drones, self.policy_net.action_size_per_drone)
-            return action.clamp(-1, 1)  # Clamp to [-1, 1] range
+            return torch.randn(self.policy_net.num_drones, self.policy_net.action_size_per_drone)
         
-        # Greedy action
+        # Add batch dimension and ensure correct shape for batch norm
+        state = state.unsqueeze(0)  # Add batch dimension [1, state_size]
+        
         with torch.no_grad():
-            state = state.to(self.device)
-            action = self.policy_net(state)
-            return action
+            q_values = self.policy_net(state)
+        
+        # Remove batch dimension and return
+        return q_values.squeeze(0)
     
     def remember(self, state, action, reward, next_state, done):
         """
@@ -164,7 +167,10 @@ class DroneSwarmDQN:
             done: Whether episode is done
         """
         self.memory.append((state, action, reward, next_state, done))
-    
+        # decay epsilon after each episode
+        if done:
+            self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_end)
+            
     def replay(self):
         """
         Train the network using experience replay.

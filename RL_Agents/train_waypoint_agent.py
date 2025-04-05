@@ -62,7 +62,7 @@ def train_waypoint_agent(episodes=100, mode='train', render=False, render_delay=
     """
     # Set matplotlib backend for rendering
     if render:
-        plt.switch_backend('TkAgg')
+        plt.switch_backend('Agg')
         plt.ion()  # Turn on interactive mode
     
     # Create environment
@@ -158,12 +158,11 @@ def train_waypoint_agent(episodes=100, mode='train', render=False, render_delay=
                     # If action is missing dimensions, pad with zeros
                     drone_action = np.pad(drone_action, (0, expected_action_size - len(drone_action)))
                 # Ensure we have scalar values for each action component
-                # Handle batch dimension by taking the first element
                 action_dict[drone_id] = np.array([
-                    float(drone_action[0][0]),  # thrust
-                    float(drone_action[0][1]),  # roll_rate
-                    float(drone_action[0][2]),  # pitch_rate
-                    float(drone_action[0][3])   # yaw_rate
+                    float(drone_action[0]),  # thrust
+                    float(drone_action[1]),  # roll_rate
+                    float(drone_action[2]),  # pitch_rate
+                    float(drone_action[3])   # yaw_rate
                 ], dtype=np.float32)
             
             # Take action in environment
@@ -403,43 +402,51 @@ def plot_training_metrics(metrics):
     plt.savefig('training_results/combined_metrics.png')
     plt.close()
 
-def test_trained_agent(model_path, num_episodes=5, render=False):
-    """Test a trained agent on the waypoint navigation task."""
-    # Create scanning waypoints
-    waypoints = create_scanning_waypoints()
+def test_trained_agent(model_path, num_episodes=5, render=True, render_delay=0.01):
+    """Test a trained agent on the waypoint navigation task"""
+    print(f"\nTesting trained agent using model: {model_path}")
     
     # Create environment
+    waypoints = create_scanning_waypoints()
     env = WaypointDroneEnv(
         num_drones=3,
-        max_steps=2000,
-        num_waypoints=10,
-        waypoint_size=15.0,
+        max_steps=5000,
+        waypoint_path=waypoints,
+        waypoint_size=60.0,
+        waypoint_reward=150.0,
+        distance_reward_factor=0.3,
+        max_steps_away=50,
+        wrong_direction_penalty=200.0,
         random_waypoints=False,
-        waypoint_path=waypoints
+        num_waypoints=2
     )
     
-    # Create agent and load trained weights
+    # Create agent
     agent = DroneSwarmDQN(
         observation_space=env.observation_space,
         action_space=env.action_space,
         learning_rate=0.001,
         gamma=0.99,
-        epsilon_start=0.01,  # Set to minimum for testing
+        epsilon_start=0.01,  # Low epsilon for testing
         epsilon_end=0.01,
         epsilon_decay=1.0,
         batch_size=64,
         target_update=10,
         memory_size=100000
     )
+    
+    # Load trained model
     agent.load(model_path)
+    
+    # Set matplotlib backend for rendering
+    if render:
+        plt.switch_backend('Agg')
+        plt.ion()
     
     # Test loop
     for episode in range(num_episodes):
+        print(f"\nStarting test episode {episode+1}/{num_episodes}")
         state, _ = env.reset()
-        total_reward = 0
-        waypoints_reached = 0
-        
-        print(f"\nStarting test episode {episode + 1}/{num_episodes}")
         
         # Convert state to tensor format
         state_tensor = {}
@@ -449,21 +456,33 @@ def test_trained_agent(model_path, num_episodes=5, render=False):
         # Concatenate all drone states
         combined_state = torch.cat([state_tensor[drone_id] for drone_id in sorted(state_tensor.keys())])
         
-        for step in range(env.max_steps):
-            # Get action from agent
-            action = agent.act(combined_state, use_epsilon=False)
+        episode_reward = 0
+        done = False
+        
+        while not done:
+            # Select action
+            action = agent.act(combined_state, use_epsilon=False)  # No exploration during testing
             
-            # Convert action to dictionary format
+            # Convert action tensor to dictionary format
             action_dict = {}
             for i, drone_id in enumerate(sorted(state.keys())):
-                action_dict[drone_id] = action[i].numpy()
+                # Convert tensor to numpy array and ensure it has the correct number of values
+                drone_action = action[i].cpu().numpy()
+                expected_action_size = env.action_space[drone_id].shape[0]
+                if len(drone_action) != expected_action_size:
+                    # If action is missing dimensions, pad with zeros
+                    drone_action = np.pad(drone_action, (0, expected_action_size - len(drone_action)))
+                # Ensure we have scalar values for each action component
+                action_dict[drone_id] = np.array([
+                    float(drone_action[0]),  # thrust
+                    float(drone_action[1]),  # roll_rate
+                    float(drone_action[2]),  # pitch_rate
+                    float(drone_action[3])   # yaw_rate
+                ], dtype=np.float32)
             
             # Take action in environment
             next_state, reward, terminated, truncated, info = env.step(action_dict)
             done = terminated or truncated
-            
-            total_reward += reward
-            waypoints_reached = info['waypoints_reached']
             
             # Convert next state to tensor format
             next_state_tensor = {}
@@ -473,27 +492,27 @@ def test_trained_agent(model_path, num_episodes=5, render=False):
             # Concatenate all next drone states
             combined_state = torch.cat([next_state_tensor[drone_id] for drone_id in sorted(next_state_tensor.keys())])
             
-            # Render environment
+            episode_reward += reward
+            
+            # Render if requested
             if render:
+                # Clear previous figure if it exists
+                if hasattr(env, 'fig') and env.fig is not None:
+                    plt.close(env.fig)
                 env.render()
-            
-            # Add a small delay to make visualization visible
-            if step % 5 == 0:
-                time.sleep(0.05)
-            
-            # Print progress
-            if step % 100 == 0:
-                print(f"Step {step}: Waypoints reached: {waypoints_reached}/{len(waypoints)}")
-            
-            # Break if episode is done
-            if done:
-                plt.close()
-                break
+                plt.pause(render_delay)
         
-        print(f"Test episode {episode + 1} complete")
-        print(f"Total Reward: {total_reward:.2f}")
-        print(f"Waypoints Reached: {waypoints_reached}/{len(waypoints)}")
-        print(f"Steps: {step + 1}")
+        # Print episode results
+        print(f"Episode {episode+1} completed")
+        print(f"Total reward: {episode_reward:.2f}")
+        print(f"Final waypoint index: {env.current_waypoint_index}/{len(waypoints)}")
+        if 'terminated_reason' in info:
+            print(f"Termination reason: {info['terminated_reason']}")
+    
+    # Close any remaining figures
+    if render:
+        plt.close('all')
+        plt.ioff()
 
 def save_metrics(metrics):
     """Save metrics to a file for later analysis."""
