@@ -1,0 +1,10 @@
+all_waypoints_reached: 0
+moving_away_too_long: 0
+out_of_bounds_x_min: 0
+out_of_bounds_x_max: 0
+out_of_bounds_y_min: 0
+out_of_bounds_y_max: 0
+out_of_bounds_z_min: 1000
+out_of_bounds_z_max: 0
+max_steps: 0
+other: 0

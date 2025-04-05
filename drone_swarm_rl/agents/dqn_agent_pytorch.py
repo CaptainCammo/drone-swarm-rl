@@ -1,299 +1,246 @@
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import numpy as np
 from collections import deque
 import random
+import os
 
-class SwarmQNetwork(nn.Module):
-    """Neural network for approximating Q-values for the entire swarm."""
-    
-    def __init__(self, state_size, action_size, num_drones, hidden_size=128):
-        """Initialize the Swarm Q-Network.
+class SwarmDQNNetwork(nn.Module):
+    def __init__(self, num_drones, state_size_per_drone, action_size_per_drone):
+        super(SwarmDQNNetwork, self).__init__()
         
-        Args:
-            state_size: Dimension of each drone's state
-            action_size: Dimension of each drone's action
-            num_drones: Number of drones in the swarm
-            hidden_size: Size of hidden layers
-        """
-        super(SwarmQNetwork, self).__init__()
+        self.num_drones = num_drones
+        self.state_size_per_drone = state_size_per_drone
+        self.action_size_per_drone = action_size_per_drone
         
-        # Total input size is state_size * num_drones
-        self.input_size = state_size * num_drones
+        # Calculate total input size (all drone states concatenated)
+        total_input_size = num_drones * state_size_per_drone
         
-        # Total output size is action_size * num_drones
-        self.output_size = action_size * num_drones
-        
-        # Define network architecture
-        self.model = nn.Sequential(
-            nn.Linear(self.input_size, hidden_size),
+        # First hidden layer - processes combined state
+        self.layer1 = nn.Sequential(
+            nn.Linear(total_input_size, 512),
             nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size * 2),
-            nn.ReLU(),
-            nn.Linear(hidden_size * 2, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, self.output_size)
+            nn.BatchNorm1d(512)
         )
+        
+        # Second hidden layer
+        self.layer2 = nn.Sequential(
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.BatchNorm1d(512)
+        )
+        
+        # Third hidden layer
+        self.layer3 = nn.Sequential(
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.BatchNorm1d(256)
+        )
+        
+        # Fourth hidden layer
+        self.layer4 = nn.Sequential(
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.BatchNorm1d(256)
+        )
+        
+        # Fifth hidden layer
+        self.layer5 = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.BatchNorm1d(128)
+        )
+        
+        # Output layer - produces actions for all drones
+        self.output_layer = nn.Linear(128, num_drones * action_size_per_drone)
+        
+        # Initialize weights
+        self._initialize_weights()
     
-    def forward(self, state):
-        """Forward pass through the network."""
-        return self.model(state)
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+                nn.init.constant_(m.bias, 0)
+    
+    def forward(self, x):
+        # x shape: [batch_size, num_drones * state_size]
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        x = self.layer5(x)
+        x = self.output_layer(x)
+        
+        # Reshape output to [batch_size, num_drones, action_size]
+        batch_size = x.size(0)
+        x = x.view(batch_size, self.num_drones, self.action_size_per_drone)
+        
+        return x
 
 class DroneSwarmDQN:
-    """DQN Agent for controlling a swarm of drones with a single network."""
-    
-    def __init__(self, state_size, action_size, num_drones, 
-                 memory_size=10000, batch_size=64, gamma=0.99,
-                 epsilon=1.0, epsilon_min=0.01, epsilon_decay=0.995,
-                 learning_rate=0.001, device=None):
-        """Initialize the DQN Agent.
+    def __init__(self, observation_space, action_space, learning_rate=0.001, gamma=0.99,
+                 epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995,
+                 batch_size=64, target_update=10, memory_size=100000):
+        """
+        Initialize the DQN agent.
         
         Args:
-            state_size: Dimension of each state for a single drone
-            action_size: Dimension of each action for a single drone
-            num_drones: Number of drones in the swarm
-            memory_size: Size of the replay memory
-            batch_size: Size of the training batch
-            gamma: Discount factor
-            epsilon: Exploration rate
-            epsilon_min: Minimum exploration rate
-            epsilon_decay: Decay rate for exploration
+            observation_space: Gym observation space
+            action_space: Gym action space
             learning_rate: Learning rate for the optimizer
-            device: Device to run the model on (cpu or cuda)
+            gamma: Discount factor
+            epsilon_start: Starting value of epsilon
+            epsilon_end: Minimum value of epsilon
+            epsilon_decay: Decay rate for epsilon
+            batch_size: Size of training batches
+            target_update: Frequency of target network updates
+            memory_size: Size of replay memory
         """
-        self.state_size = state_size
-        self.action_size = action_size
-        self.num_drones = num_drones
-        self.memory_size = memory_size
-        self.batch_size = batch_size
-        self.gamma = gamma
-        self.epsilon = epsilon
-        self.epsilon_min = epsilon_min
-        self.epsilon_decay = epsilon_decay
-        self.learning_rate = learning_rate
+        # Get dimensions from the first drone (assuming all drones have same state/action sizes)
+        first_drone_id = next(iter(observation_space.spaces.keys()))
+        state_size_per_drone = observation_space.spaces[first_drone_id].shape[0]
+        action_size_per_drone = action_space.spaces[first_drone_id].shape[0]
+        num_drones = len(observation_space.spaces)
         
-        # Set device (CPU or GPU)
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = device
+        # Initialize networks
+        self.policy_net = SwarmDQNNetwork(num_drones, state_size_per_drone, action_size_per_drone)
+        self.target_net = SwarmDQNNetwork(num_drones, state_size_per_drone, action_size_per_drone)
+        self.target_net.load_state_dict(self.policy_net.state_dict())
         
-        print(f"Using device: {self.device}")
+        # Initialize optimizer
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=learning_rate)
         
         # Initialize replay memory
         self.memory = deque(maxlen=memory_size)
         
-        # Create a single Q-network for the entire swarm
-        self.q_network = SwarmQNetwork(state_size, action_size, num_drones).to(self.device)
-        
-        # Create target Q-network
-        self.target_network = SwarmQNetwork(state_size, action_size, num_drones).to(self.device)
-        self.target_network.load_state_dict(self.q_network.state_dict())
-        self.target_network.eval()  # Set to evaluation mode
-        
-        # Create optimizer
-        self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate)
-        
-        # Loss function
-        self.criterion = nn.MSELoss()
-        
-        # Counter for updating target network
+        # Initialize hyperparameters
+        self.gamma = gamma
+        self.epsilon = epsilon_start
+        self.epsilon_start = epsilon_start
+        self.epsilon_end = epsilon_end
+        self.epsilon_decay = epsilon_decay
+        self.batch_size = batch_size
+        self.target_update = target_update
         self.update_counter = 0
-        self.target_update_freq = 10  # Update target network every 10 steps
-    
-    def _flatten_state(self, state_dict):
-        """Convert state dictionary to flat tensor."""
-        flat_state = []
-        for i in range(self.num_drones):
-            drone_id = f'drone_{i}'
-            flat_state.extend(state_dict[drone_id])
-        return np.array(flat_state, dtype=np.float32)
-    
-    def _unflatten_action(self, action_flat):
-        """Convert flat action array to dictionary."""
-        actions = {}
-        for i in range(self.num_drones):
-            drone_id = f'drone_{i}'
-            start_idx = i * self.action_size
-            end_idx = start_idx + self.action_size
-            
-            # Extract and process this drone's actions
-            drone_action = action_flat[start_idx:end_idx].copy()
-            
-            # Ensure thrust is between 0 and 1
-            drone_action[0] = np.clip(drone_action[0], 0, 1)
-            
-            # Ensure other actions are between -1 and 1
-            drone_action[1:] = np.clip(drone_action[1:], -1, 1)
-            
-            actions[drone_id] = drone_action.astype(np.float32)
-        return actions
-    
-    def remember(self, state, action, reward, next_state, done):
-        """Store experience in replay memory."""
-        # Flatten states for storage
-        flat_state = self._flatten_state(state)
-        flat_next_state = self._flatten_state(next_state)
         
-        # Store flattened experience
-        self.memory.append((flat_state, action, reward, flat_next_state, done))
+        # Device configuration
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.policy_net.to(self.device)
+        self.target_net.to(self.device)
     
     def act(self, state, use_epsilon=True):
-        """Choose actions for all drones based on the current state.
+        """
+        Select an action using epsilon-greedy policy.
         
         Args:
-            state: Dictionary of states for each drone
-            use_epsilon: Whether to use epsilon-greedy policy
-            
+            state: Current state tensor
+            use_epsilon: Whether to use epsilon-greedy exploration
+        
         Returns:
-            Dictionary of actions for each drone
+            Action tensor
         """
-        # Flatten the state dictionary
-        flat_state = self._flatten_state(state)
+        if use_epsilon and random.random() < self.epsilon:
+            # Random action
+            action = torch.randn(state.size(0), self.policy_net.num_drones, self.policy_net.action_size_per_drone)
+            return action.clamp(-1, 1)  # Clamp to [-1, 1] range
         
-        # Epsilon-greedy action selection
-        if use_epsilon and np.random.rand() <= self.epsilon:
-            # Random actions for all drones
-            flat_actions = np.random.uniform(low=-1, high=1, size=self.action_size * self.num_drones)
-            # Ensure thrust values are between 0 and 1
-            for i in range(self.num_drones):
-                thrust_idx = i * self.action_size
-                flat_actions[thrust_idx] = np.clip((flat_actions[thrust_idx] + 1) / 2, 0, 1)
-        else:
-            # Get actions from Q-network
-            state_tensor = torch.FloatTensor(flat_state).unsqueeze(0).to(self.device)
-            
-            with torch.no_grad():
-                q_values = self.q_network(state_tensor)
-            
-            # Convert Q-values to actions
-            q_values = q_values.cpu().numpy()[0]
-            
-            # Process Q-values to get actions for each drone
-            flat_actions = np.zeros(self.action_size * self.num_drones)
-            
-            for i in range(self.num_drones):
-                start_idx = i * self.action_size
-                end_idx = start_idx + self.action_size
-                
-                # Get Q-values for this drone
-                drone_q = q_values[start_idx:end_idx]
-                
-                # Normalize Q-values to the range [-1, 1]
-                q_min, q_max = np.min(drone_q), np.max(drone_q)
-                if q_max > q_min:  # Avoid division by zero
-                    normalized_q = 2 * (drone_q - q_min) / (q_max - q_min) - 1
-                else:
-                    normalized_q = np.zeros_like(drone_q)
-                
-                # Ensure thrust is between 0 and 1
-                normalized_q[0] = (normalized_q[0] + 1) / 2  # Map from [-1, 1] to [0, 1]
-                
-                # Store normalized actions
-                flat_actions[start_idx:end_idx] = normalized_q
+        # Greedy action
+        with torch.no_grad():
+            state = state.to(self.device)
+            action = self.policy_net(state)
+            return action
+    
+    def remember(self, state, action, reward, next_state, done):
+        """
+        Store experience in replay memory.
         
-        # Convert flat actions to dictionary
-        return self._unflatten_action(flat_actions)
+        Args:
+            state: Current state
+            action: Action taken
+            reward: Reward received
+            next_state: Next state
+            done: Whether episode is done
+        """
+        self.memory.append((state, action, reward, next_state, done))
     
     def replay(self):
-        """Train the agent by sampling from replay memory."""
-        # Skip if not enough samples in memory
+        """
+        Train the network using experience replay.
+        """
         if len(self.memory) < self.batch_size:
             return
         
-        # Sample a batch from memory
-        minibatch = random.sample(self.memory, self.batch_size)
-        
-        # Extract batch data
-        states = np.array([sample[0] for sample in minibatch])
-        actions_dict = [sample[1] for sample in minibatch]
-        rewards = np.array([sample[2] for sample in minibatch])
-        next_states = np.array([sample[3] for sample in minibatch])
-        dones = np.array([sample[4] for sample in minibatch])
+        # Sample random batch from memory
+        batch = random.sample(self.memory, self.batch_size)
+        states, actions, rewards, next_states, dones = zip(*batch)
         
         # Convert to tensors
-        states_tensor = torch.FloatTensor(states).to(self.device)
-        rewards_tensor = torch.FloatTensor(rewards).to(self.device)
-        next_states_tensor = torch.FloatTensor(next_states).to(self.device)
-        dones_tensor = torch.FloatTensor(dones).to(self.device)
+        states = torch.stack(states).to(self.device)
+        actions = torch.stack(actions).to(self.device)
+        rewards = torch.tensor(rewards, dtype=torch.float32).to(self.device)
+        next_states = torch.stack(next_states).to(self.device)
+        dones = torch.tensor(dones, dtype=torch.float32).to(self.device)
         
-        # Get current Q-values
-        current_q = self.q_network(states_tensor)
+        # Compute current Q-values (with gradients)
+        current_q_values = self.policy_net(states)
         
-        # Get next Q-values from target network
+        # Get action indices for gather operation
         with torch.no_grad():
-            next_q = self.target_network(next_states_tensor)
-            
-            # For each drone, get the maximum Q-value for the next state
-            target_q = current_q.clone()
-            
-            for i in range(self.batch_size):
-                # For each sample in the batch
-                for d in range(self.num_drones):
-                    # For each drone
-                    start_idx = d * self.action_size
-                    end_idx = start_idx + self.action_size
-                    
-                    # Get the maximum Q-value for this drone's next state
-                    max_next_q = torch.max(next_q[i, start_idx:end_idx])
-                    
-                    # Calculate target Q-value
-                    target_value = rewards_tensor[i] + (1 - dones_tensor[i]) * self.gamma * max_next_q
-                    
-                    # Update all Q-values for this drone
-                    target_q[i, start_idx:end_idx] = target_value
+            action_indices = torch.argmax(current_q_values, dim=2, keepdim=True)
         
-        # Compute loss
-        loss = self.criterion(current_q, target_q)
+        # Select Q-values for taken actions
+        current_q_values = current_q_values.gather(2, action_indices)
+        
+        # Compute next state Q-values (without gradients)
+        with torch.no_grad():
+            next_q_values = self.target_net(next_states).max(2)[0]
+        
+        # Reshape rewards to match next_q_values shape [batch_size, num_drones]
+        rewards = rewards.unsqueeze(1).expand(-1, self.policy_net.num_drones)
+        dones = dones.unsqueeze(1).expand(-1, self.policy_net.num_drones)
+        
+        # Compute the expected Q values
+        expected_q_values = rewards + (1 - dones) * self.gamma * next_q_values
+        
+        # Compute Huber loss
+        loss = nn.SmoothL1Loss()(current_q_values.squeeze(), expected_q_values)
         
         # Optimize the model
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
         
-        # Update target network periodically
+        # Update target network
         self.update_counter += 1
-        if self.update_counter % self.target_update_freq == 0:
-            self.update_target_network()
-        
-        # Decay epsilon
-        if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
+        if self.update_counter % self.target_update == 0:
+            self.target_net.load_state_dict(self.policy_net.state_dict())
     
-    def update_target_network(self):
-        """Update target network with weights from main network."""
-        self.target_network.load_state_dict(self.q_network.state_dict())
-    
-    def save(self, filepath):
-        """Save model weights to file."""
-        save_dict = {
-            'q_network': self.q_network.state_dict(),
-            'hyperparams': {
-                'state_size': self.state_size,
-                'action_size': self.action_size,
-                'num_drones': self.num_drones,
-                'gamma': self.gamma,
-                'epsilon': self.epsilon,
-                'epsilon_min': self.epsilon_min,
-                'epsilon_decay': self.epsilon_decay
-            }
-        }
-        torch.save(save_dict, filepath)
-    
-    def load(self, filepath):
-        """Load model weights from file."""
-        checkpoint = torch.load(filepath, map_location=self.device)
+    def save(self, path):
+        """
+        Save the model to a file.
         
-        # Load hyperparameters if available
-        if 'hyperparams' in checkpoint:
-            hyperparams = checkpoint['hyperparams']
-            self.gamma = hyperparams.get('gamma', self.gamma)
-            self.epsilon = hyperparams.get('epsilon', self.epsilon)
-            self.epsilon_min = hyperparams.get('epsilon_min', self.epsilon_min)
-            self.epsilon_decay = hyperparams.get('epsilon_decay', self.epsilon_decay)
+        Args:
+            path: Path to save the model
+        """
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save({
+            'policy_net_state_dict': self.policy_net.state_dict(),
+            'target_net_state_dict': self.target_net.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'epsilon': self.epsilon
+        }, path)
+    
+    def load(self, path):
+        """
+        Load the model from a file.
         
-        # Load network weights
-        if 'q_network' in checkpoint:
-            self.q_network.load_state_dict(checkpoint['q_network'])
-            self.target_network.load_state_dict(checkpoint['q_network']) 
+        Args:
+            path: Path to load the model from
+        """
+        checkpoint = torch.load(path)
+        self.policy_net.load_state_dict(checkpoint['policy_net_state_dict'])
+        self.target_net.load_state_dict(checkpoint['target_net_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.epsilon = checkpoint['epsilon']

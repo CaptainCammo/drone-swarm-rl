@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from .environment import DroneSwarmEnv
+from .swarm_metrics import calculate_centroid
 
 class WaypointDroneEnv(DroneSwarmEnv):
     """
@@ -11,8 +12,8 @@ class WaypointDroneEnv(DroneSwarmEnv):
     
     def __init__(self, num_drones=3, max_steps=1000, num_waypoints=5, 
                  waypoint_size=15.0, random_waypoints=True, waypoint_path=None,
-                 waypoint_reward=50.0, distance_reward_factor=0.05, reward_exponent=1.5,
-                 max_steps_away=50, wrong_direction_penalty=100.0):
+                 waypoint_reward=1000.0, distance_reward_factor=0.05, reward_exponent=1.5,
+                 max_steps_away=50, wrong_direction_penalty=200.0):
         """
         Initialize the waypoint environment.
         
@@ -74,7 +75,7 @@ class WaypointDroneEnv(DroneSwarmEnv):
     
     def _generate_waypoints(self):
         """Generate waypoints for the environment."""
-        if not self.random_waypoints and self.waypoint_path is not None:
+        if not self.random_waypoints and self.waypoint_path:
             # Use provided waypoint path
             self.waypoints = self.waypoint_path[:self.num_waypoints]
         else:
@@ -114,12 +115,12 @@ class WaypointDroneEnv(DroneSwarmEnv):
     
     def _get_distance_to_current_waypoint(self):
         """Calculate distance from swarm centroid to current waypoint."""
-        if self.current_waypoint_index >= len(self.waypoints):
+        if self.current_waypoint_index >= self.num_waypoints:
             return 0.0
         
-        # Calculate centroid position
-        positions = np.array([self.state[f'drone_{i}'][:3] for i in range(self.num_drones)])
-        centroid = positions.mean(axis=0)
+        # Get positions and centroid using swarm_metrics
+        positions = np.array([drone.get_position() for drone in self.drones.values()])
+        centroid = calculate_centroid(self.drones)
         
         # Calculate distance to current waypoint
         current_waypoint = self.waypoints[self.current_waypoint_index]
@@ -132,9 +133,9 @@ class WaypointDroneEnv(DroneSwarmEnv):
         if self.current_waypoint_index >= len(self.waypoints):
             return False
         
-        # Calculate centroid position
-        positions = np.array([self.state[f'drone_{i}'][:3] for i in range(self.num_drones)])
-        centroid = positions.mean(axis=0)
+        # Get positions and centroid using swarm_metrics
+        positions = np.array([drone.get_position() for drone in self.drones.values()])
+        centroid = calculate_centroid(self.drones)
         
         # Check if centroid is within the waypoint box
         current_waypoint = self.waypoints[self.current_waypoint_index]
@@ -152,70 +153,65 @@ class WaypointDroneEnv(DroneSwarmEnv):
         # Get the base environment step result
         obs, reward, terminated, truncated, info = super().step(action)
         
-        # Calculate positions and centroid
-        positions = np.array([self.state[f'drone_{i}'][:3] for i in range(self.num_drones)])
-        centroid = positions.mean(axis=0)
+        # Get positions and centroid using swarm_metrics
+        positions = np.array([drone.get_position() for drone in self.drones.values()])
+        centroid = calculate_centroid(self.drones)
         
-        # Calculate distance to current waypoint
-        current_waypoint = self.waypoints[self.current_waypoint_index]
-        distance_to_waypoint = np.linalg.norm(centroid - current_waypoint)
-        
-        # Check if we've reached the current waypoint
-        if distance_to_waypoint < self.waypoint_size:
-            # Add waypoint reward
-            reward += self.waypoint_reward
-            info['waypoint_reward'] = self.waypoint_reward
+        # Only calculate waypoint-related rewards if we haven't reached all waypoints
+        if self.current_waypoint_index < len(self.waypoints):
+            # Calculate distance to current waypoint
+            current_waypoint = self.waypoints[self.current_waypoint_index]
+            distance_to_waypoint = np.linalg.norm(centroid - current_waypoint)
             
-            # Move to next waypoint
-            self.current_waypoint_index += 1
+            # Check if we've reached the current waypoint
+            if distance_to_waypoint < self.waypoint_size:
+                # Add waypoint reward
+                reward += self.waypoint_reward
+                info['waypoint_reward'] = self.waypoint_reward
+                
+                # Move to next waypoint
+                self.current_waypoint_index += 1
+                
+                # Reset steps moving away counter
+                self.steps_moving_away = 0
+                
+                # Check if we've reached all waypoints
+                if self.current_waypoint_index >= len(self.waypoints):
+                    terminated = True
+                    info['terminated_reason'] = 'all_waypoints_reached'
+                    reward += self.waypoint_reward * 2  # Bonus for completing all waypoints
+            else:
+                # Calculate if we're moving toward or away from the waypoint
+                if self.prev_distance_to_waypoint is not None:
+                    if distance_to_waypoint >= self.prev_distance_to_waypoint:
+                        # Moving away from waypoint
+                        self.steps_moving_away += 1
+                        
+                        # Apply penalty if we've been moving away for too long
+                        if self.steps_moving_away >= self.max_steps_away:
+                            terminated = True
+                            reward -= self.wrong_direction_penalty
+                            info['wrong_direction_penalty'] = self.wrong_direction_penalty
+                            info['terminated_reason'] = 'moving_away_too_long'
+                    else:
+                        # Moving toward waypoint
+                        self.steps_moving_away = 0
+                
+                # Add distance-based reward
+                distance_reward = self.distance_reward_factor * (1.0 / (1.0 + distance_to_waypoint))
+                reward += distance_reward
+                info['distance_reward'] = distance_reward
             
-            # Reset steps moving away counter
-            self.steps_moving_away = 0
-            
-            # Check if we've reached all waypoints
-            if self.current_waypoint_index >= len(self.waypoints):
-                terminated = True
-                info['terminated_reason'] = 'all_waypoints_reached'
-                reward += self.waypoint_reward * 2  # Bonus for completing all waypoints
+            # Update previous distance
+            self.prev_distance_to_waypoint = distance_to_waypoint
         else:
-            # Calculate if we're moving toward or away from the waypoint
-            if self.prev_distance_to_waypoint is not None:
-                if distance_to_waypoint >= self.prev_distance_to_waypoint:
-                    # Moving away from waypoint
-                    self.steps_moving_away += 1
-                    
-                    # Apply penalty if we've been moving away for too long
-                    if self.steps_moving_away >= self.max_steps_away:
-                        terminated = True
-                        reward -= self.wrong_direction_penalty
-                        info['wrong_direction_penalty'] = self.wrong_direction_penalty
-                        info['terminated_reason'] = 'moving_away_too_long'
-                else:
-                    # Moving toward waypoint
-                    self.steps_moving_away = 0
-            
-            # Add distance-based reward
-            distance_reward = self.distance_reward_factor * (1.0 / (1.0 + distance_to_waypoint))
-            reward += distance_reward
-            info['distance_reward'] = distance_reward
-        
-        # Update previous distance
-        self.prev_distance_to_waypoint = distance_to_waypoint
+            # If we've reached all waypoints, set the distance to 0
+            self.prev_distance_to_waypoint = 0.0
         
         # Add waypoint info
         info['current_waypoint_index'] = self.current_waypoint_index
-        info['distance_to_waypoint'] = distance_to_waypoint
+        info['distance_to_waypoint'] = self.prev_distance_to_waypoint
         info['steps_moving_away'] = self.steps_moving_away
-        
-        # Add formation quality reward
-        formation_quality_reward = self._compute_formation_quality_reward(positions, centroid)
-        reward += formation_quality_reward
-        info['formation_quality_reward'] = formation_quality_reward
-        
-        # Add velocity alignment reward
-        velocity_alignment_reward = self._compute_velocity_alignment_reward()
-        reward += velocity_alignment_reward
-        info['velocity_alignment_reward'] = velocity_alignment_reward
         
         # Check if centroid is outside the boundary
         boundary_x = [-300, 300]
@@ -248,151 +244,46 @@ class WaypointDroneEnv(DroneSwarmEnv):
         
         return obs, reward, terminated, truncated, info
     
-    def _compute_reward(self, centroid=None, positions=None):
-        """
-        Compute base reward with additional components for waypoint navigation and swarm behavior.
+    def _compute_reward(self, centroid, positions):
+        """Compute the reward based on the current state."""
+        from .swarm_metrics import calculate_swarm_health
         
-        Rewards:
-        1. Base reward from parent class (boundary and basic formation)
-        2. Waypoint direction reward (alignment with path to waypoint)
-        3. Formation quality reward (optimal distance from centroid)
-        4. Velocity alignment reward (drones moving in similar directions)
-        """
-        # Get base reward from parent class
-        base_reward = super()._compute_reward(centroid, positions)
+        # Calculate swarm health score
+        health_score = calculate_swarm_health(self.drones)
         
-        # Calculate positions and centroid if not provided
-        if positions is None:
-            positions = np.array([self.state[f'drone_{i}'][:3] for i in range(self.num_drones)])
-        if centroid is None:
-            centroid = positions.mean(axis=0)
+        # Base reward from swarm health
+        reward = health_score * 10.0
         
-        # Get velocities for all drones
-        velocities = np.array([self.state[f'drone_{i}'][3:6] for i in range(self.num_drones)])
-        
-        # 1. Waypoint direction reward - encourage flying toward the next waypoint
-        waypoint_direction_reward = 0
-        
+        # Add waypoint-specific rewards
         if self.current_waypoint_index < len(self.waypoints):
-            # Vector from centroid to current waypoint
-            to_waypoint = self.waypoints[self.current_waypoint_index] - centroid
-            distance_to_waypoint = np.linalg.norm(to_waypoint)
+            current_waypoint = self.waypoints[self.current_waypoint_index]
+            distance_to_waypoint = np.linalg.norm(centroid - current_waypoint)
             
-            # Normalize if not zero
-            if distance_to_waypoint > 0.1:
-                to_waypoint = to_waypoint / distance_to_waypoint
-                
-                # Get average velocity direction
-                avg_velocity = velocities.mean(axis=0)
-                speed = np.linalg.norm(avg_velocity)
-                
-                if speed > 0.1:
-                    velocity_dir = avg_velocity / speed
-                    
-                    # Reward for velocity aligned with direction to waypoint
-                    alignment = np.dot(to_waypoint, velocity_dir)
-                    waypoint_direction_reward = 2.0 * alignment
-        
-        # 2. Formation quality reward - optimal distance from centroid
-        formation_quality_reward = 0
-        optimal_distance = 15.0  # Optimal distance from centroid in meters
-        distance_tolerance = 10.0  # Tolerance range
-        
-        for i in range(self.num_drones):
-            # Distance from drone to centroid
-            drone_pos = positions[i]
-            dist_to_centroid = np.linalg.norm(drone_pos - centroid)
+            # Check if any drone is out of bounds
+            boundary_x = [-300, 300]
+            boundary_y = [-300, 300]
+            boundary_z = [0, 300]
             
-            # Reward for being close to optimal distance
-            # Uses a Gaussian-like function that peaks at optimal_distance
-            distance_error = abs(dist_to_centroid - optimal_distance)
-            if distance_error <= distance_tolerance:
-                # Higher reward for being closer to optimal distance
-                formation_quality_reward += 1.0 * (1.0 - distance_error / distance_tolerance)
+            out_of_bounds = False
+            for drone in self.drones.values():
+                pos = drone.get_position()
+                if (pos[0] < boundary_x[0] or pos[0] > boundary_x[1] or
+                    pos[1] < boundary_y[0] or pos[1] > boundary_y[1] or
+                    pos[2] < boundary_z[0] or pos[2] > boundary_z[1]):
+                    out_of_bounds = True
+                    break
+            
+            # If out of bounds before reaching waypoint, apply strong penalty
+            if out_of_bounds:
+                reward -= (100.0 * self.num_waypoints / (self.current_waypoint_index + 1)) # Strong penalty for going out of bounds before reaching waypoint
+            elif distance_to_waypoint < self.waypoint_size:
+                reward += self.waypoint_reward
+                self.current_waypoint_index += 1
             else:
-                # Small penalty for being too far from optimal
-                formation_quality_reward -= 0.2 * (distance_error - distance_tolerance) / optimal_distance
+                # Exponential reward for getting closer to the waypoint
+                reward += self.distance_reward_factor * np.exp(-distance_to_waypoint / self.waypoint_size)
         
-        # Normalize by number of drones
-        formation_quality_reward /= self.num_drones
-        
-        # 3. Velocity alignment reward - encourage drones to move in similar directions
-        velocity_alignment_reward = 0
-        
-        # Calculate average velocity vector
-        avg_velocity = velocities.mean(axis=0)
-        avg_speed = np.linalg.norm(avg_velocity)
-        
-        if avg_speed > 0.1:  # Only if there's meaningful movement
-            avg_velocity_dir = avg_velocity / avg_speed
-            
-            # Calculate alignment of each drone with the average
-            alignment_sum = 0
-            for i in range(self.num_drones):
-                drone_vel = velocities[i]
-                drone_speed = np.linalg.norm(drone_vel)
-                
-                if drone_speed > 0.1:
-                    drone_vel_dir = drone_vel / drone_speed
-                    # Dot product measures alignment (-1 to 1)
-                    alignment = np.dot(drone_vel_dir, avg_velocity_dir)
-                    alignment_sum += alignment
-            
-            # Normalize and scale
-            velocity_alignment_reward = 1.5 * (alignment_sum / self.num_drones)
-        
-        # Combine all reward components
-        total_reward = (
-            base_reward + 
-            waypoint_direction_reward + 
-            formation_quality_reward + 
-            velocity_alignment_reward
-        )
-        
-        return total_reward
-    
-    def _compute_formation_quality_reward(self, positions, centroid):
-        """Compute reward for maintaining good formation quality."""
-        formation_quality_reward = 0
-        optimal_distance = 15.0
-        distance_tolerance = 10.0
-        
-        for i in range(self.num_drones):
-            drone_pos = positions[i]
-            dist_to_centroid = np.linalg.norm(drone_pos - centroid)
-            
-            distance_error = abs(dist_to_centroid - optimal_distance)
-            if distance_error <= distance_tolerance:
-                formation_quality_reward += 1.0 * (1.0 - distance_error / distance_tolerance)
-            else:
-                formation_quality_reward -= 0.2 * (distance_error - distance_tolerance) / optimal_distance
-        
-        formation_quality_reward /= self.num_drones
-        return formation_quality_reward
-    
-    def _compute_velocity_alignment_reward(self):
-        """Compute reward for aligning velocity vectors."""
-        velocities = np.array([self.state[f'drone_{i}'][3:6] for i in range(self.num_drones)])
-        avg_velocity = velocities.mean(axis=0)
-        avg_speed = np.linalg.norm(avg_velocity)
-        
-        velocity_alignment_reward = 0
-        if avg_speed > 0.1:
-            avg_velocity_dir = avg_velocity / avg_speed
-            
-            alignment_sum = 0
-            for i in range(self.num_drones):
-                drone_vel = velocities[i]
-                drone_speed = np.linalg.norm(drone_vel)
-                
-                if drone_speed > 0.1:
-                    drone_vel_dir = drone_vel / drone_speed
-                    alignment = np.dot(drone_vel_dir, avg_velocity_dir)
-                    alignment_sum += alignment
-            
-            velocity_alignment_reward = 1.5 * (alignment_sum / self.num_drones)
-        
-        return velocity_alignment_reward
+        return reward
     
     def render(self, return_fig=False):
         """
