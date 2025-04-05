@@ -60,6 +60,11 @@ def train_waypoint_agent(episodes=100, mode='train', render=False, render_delay=
         render_delay: Delay between renders
         render_interval: How often to render (every N episodes)
     """
+    # Set matplotlib backend for rendering
+    if render:
+        plt.switch_backend('TkAgg')
+        plt.ion()  # Turn on interactive mode
+    
     # Create environment
     waypoints = create_scanning_waypoints()
     env = WaypointDroneEnv(
@@ -206,8 +211,11 @@ def train_waypoint_agent(episodes=100, mode='train', render=False, render_delay=
             
             # Render if requested and at the specified interval
             if render and episode % render_interval == 0:
+                # Clear previous figure if it exists
+                if hasattr(env, 'fig') and env.fig is not None:
+                    plt.close(env.fig)
                 env.render()
-                time.sleep(render_delay)
+                plt.pause(render_delay)
         
         # Update metrics
         metrics['episode_rewards'].append(episode_reward)
@@ -251,6 +259,11 @@ def train_waypoint_agent(episodes=100, mode='train', render=False, render_delay=
     
     # Plot metrics
     plot_training_metrics(metrics)
+    
+    # Close any remaining figures
+    if render:
+        plt.close('all')
+        plt.ioff()  # Turn off interactive mode
     
     return agent
 
